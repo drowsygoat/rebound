@@ -9,8 +9,9 @@ function tag_finder(tag,    i){
     if (substr($0,1,1)!="@"){
         for (i=1; i<=NF+1; i++){
             if (i==NF+1) {
-                print "Can't find " tag ". Problem at record " $0 > "/dev/stderr"
-                # exit 1
+                print "___________________________________________________"
+                print "Fatal error: unable to find " tag " at record " $0 # > "/dev/stderr"
+                exit 1
             }else if (substr($i,1,5)!=tag){
                 continue
             }else{
@@ -42,8 +43,8 @@ function MD_extender(md,  out,a,b) {
     }
     return out ####
 }
+# returns matched+mismatched portion (--> out) of the original read (read) as an array (--> cr)
 function MM_extractor(read, ec,     a,b,j,i,k,out) {
-    # returns only the matched+mismatched portion (out) of the original read (read) as an array cr
     out=""
     split(read, b, "")
     split(ec, a, "")
@@ -63,36 +64,38 @@ function MM_extractor(read, ec,     a,b,j,i,k,out) {
             j++
             continue
         }else{
-            print "Unknown character(s) in CIGAR string of read" $1 > "/dev/stderr"
+            print "Fatal error: Unexpected character(s) in CIGAR string of read" $1
+            exit 1
         }
     }
     return out
 }
 function cigar_extender(cygaro,   out, b,i,j){
-    # expands CIGAR string into a longer string (out) with a single letter per alignment position; works only for CIGARs with [SIDM] symbols
+    # expands CIGAR string into a longer string (out) with a single letter per alignment position; works for CIGARs with [SIDNM] operations
     out = ""
     n = patsplit(cygaro, b, /[^[:digit:]]/, seps)
-    # this is looping through the CIGAR "segments" and gets their lengths (seps)
+    # loop through CIGAR "segments" to get their lengths (--> seps)
     for (i=0; i<=n-1; i++) {
-        # this iteratively adds letter codes to each element of the CIGAR string being expanded
+        # iteratively add letter codes correspondng to CIGAR operations of CIGAR string being expanded
        for (j=1; j<=seps[i]; j++) {
            out=out b[i+1]
        }
    }
    return out
 }
-
 function MP_producer(MD_input, ec, read,      a, b){
     # outputs array (read_mis) with mismatched bases in the read, and their respective indices; if there are not gaps in the alignment, and if nothing was clipped from the read, these indices are identical to the indices of the mismatched reference bases; indexing starts from the start of the alignment;
-    # arrays ref_mis and read_mis contain mismatched bases and their positions (with respect to start of the alignment); an offeset array is populated that contains offset values for consecutive pairs; in case of reads that have no I, D or S, the values in read_mis and ref_mis are identical
+    # arrays ref_mis and read_mis contain mismatched bases and their positions (with respect to start of the alignment); an offset array is populated that contains offset values for consecutive pairs; in case of reads that have no I, D, N, or S in their CIGARs the values in read_mis and ref_mis are identical
     sum_md=0; delete(ref_mis); delete(read_mis)
     match(MD_input,/MD:Z:/)
     a=substr(MD_input,RSTART+RLENGTH)
     while(match(a,/\^[A-Z]+/)) {
         a=substr(a,1,RSTART-1) "h" RLENGTH-1 "^" substr(a,RSTART+RLENGTH)
     }
+    # print "a", a
     n=patsplit(a, b, /[[:alpha:]^]/, seps)
     for(i=1; i<=n; i++){
+        #print "sepsi",seps[i], i
         if (seps[i] == ""){
             seps[i] = 0
         }
@@ -103,10 +106,15 @@ function MP_producer(MD_input, ec, read,      a, b){
         }else{
             sum_md+=seps[i-1]+1
         }
+        # print "sum_md",sum_md
         if (b[i]!="^" && b[i]!="h"){
             ref_mis[sum_md]=b[i]
         }
     }
+    # for (i in ref_mis){
+    #     print "ref_misi",ref_mis[i], i
+    # }
+    # print ec
     for (i in ref_mis){
         j=0
         k=0
@@ -116,15 +124,21 @@ function MP_producer(MD_input, ec, read,      a, b){
                 if (k==i*1){
                     break
                 }
-            }else if (substr(ec,m,1) == "S" || substr(ec,m,1) == "I") {
+            }else if (substr(ec,m,1) == "S" || substr(ec,m,1) == "I"){
                 j++
-            }else if (substr(ec,m,1) == "D" || substr(ec,m,1) == "N") {
+            }else if (substr(ec,m,1) == "D" || substr(ec,m,1) == "N"){
                 j--
-                k++ # only deletions need to be acounted for to match the positions in cigars
+                k++ # only deletions/introns need to be acounted for to match the positions in CIGARs
             }
-                offset[i] = j
+            # print "j",j
+            # print offset[i], i,"offset"
+                # offset[i] = j
         }
 
+        offset[i] = j
+
+        # print i, j, i+j
+        # print substr(read,i+j,1), "substr"
         read_mis[i+j] = substr(read,i+j,1)
 
         mp = "MP:Z:"
@@ -212,12 +226,17 @@ function MP_producer(MD_input, ec, read,      a, b){
                 cnt++
             }
         }
-
-        if (length(ref_mis) == 0) {
-            print "Something went wrong with generating MP tag" > "/dev/stderr"
+        # remove later, this should never be required
+        # gsub(",,*" , "," , mp)
+        # gsub("MP:Z:," , "MP:Z:" , mp)
+        if (length(ref_mis) == 0){
+            print "This should not have happened" > "/dev/stderr"
             exit 1
         }
     }
+#     for (i in offset) {
+#     print offset[i],i, "off"
+# }
 }
 
 function TCRA_producer(MM_extracted, md_extended,    i){
@@ -284,26 +303,35 @@ function TCRA_producer(MM_extracted, md_extended,    i){
             count["NN"]++
         }
     }
-    if ($2 ~ /^129|137|161|163|65|73|97|99|0$/){
+    # reverse strand + first in pair or forward strand + second in pair
+    if ((and($2, 0x20) && and($2, 0x80)) || (and($2, 0x10) && and($2, 0x40))){
         tc = "TC:i:" count["TC"]+0
-    }else if ($2 ~ /^113|145|147|153|177|81|83|89|16$/) {
-        tc= "TC:i:" count["AG"]+0
+    #reverse strand + second in pair or forward strand + first in pair
+    }else if ((and($2, 0x10) && and($2, 0x80)) || (and($2, 0x20) && and($2, 0x40))){
+        tc = "TC:i:" count["AG"]+0
     }
     sp = ","
     ra = "RA:Z:" count["AA"]+0 sp count["AC"]+0 sp count["AG"]+0 sp count["AT"]+0 sp count["AN"]+0 sp count["CA"]+0 sp count["CC"]+0 sp count["CG"]+0 sp count["CT"]+0 sp count["CN"]+0 sp count["GA"]+0 sp count["GC"]+0 sp count["GG"]+0 sp count["GT"]+0 sp count["GN"]+0 sp count["TA"]+0 sp count["TC"]+0 sp count["TG"]+0 sp count["TT"]+0 sp count["TN"]+0 sp count["NA"]+0 sp count["NC"]+0 sp count["NG"]+0 sp count["NT"]+0 sp count["NN"]+0 sp
+
+    if (count["AC"] + count["AG"] + count["AT"] + count["AN"] + count["CA"] + count["CG"] + count["CT"] + count["CN"] + count["GA"] + count["GC"] + count["GT"] + count["GN"] + count["TA"] + count["TC"] + count["TG"] + count["TN"] + count["NA"] + count["NC"] + count["NG"] + count["NT"] + count["NN"] > 0){
+        xi = "XI:f:"(count["AA"] + count["CC"] + count["GG"] + count["TT"] + 0) / (count["AA"] + count["AC"] + count["AG"] + count["AT"] + count["AN"] + count["CA"] + count["CC"] + count["CG"] + count["CT"] + count["CN"] + count["GA"] + count["GC"] + count["GG"] + count["GT"] + count["GN"] + count["TA"] + count["TC"] + count["TG"] + count["TT"] + count["TN"] + count["NA"] + count["NC"] + count["NG"] + count["NT"] + count["NN"])
+    }else{
+        xi = "XI:f:0"
+    }
 }
 
 function TCRA_producer_simple(read, ec,      a, count) {
-    # use "simple" function also if reads were entirely clipped (cases of 100% overlap) == only S in CIGARS; this reads may actually be tossed completely, but they can be used for DE analysis when one wants to use exactly the same pool of reads for both, DE and SLAM
-    # no mathes and mismatches == full clip
+    # use "simple" function also if reads were entirely clipped (cases of 100% overlap) == only S in CIGARS; this reads may actually be tossed completely, but they can be used for DE analysis when one wants to use exactly the same pool of reads for both, DE and SLAM-seq; in such sase, the reads would need to get the identi score of 1, otherwise will be filtered out
+    # no matches and mismatches == full clip
     if ($6 ~ /^[^M]+$/){
         tc_simple = "TC:i:0"
         ra_simple = "RA:Z:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,"
+        xi_simple = "XI:f:0" # may be set to 1 if filtering of reads with no Ms in CIGARs is not desired
     }else{
-            # "clean" CIGAR case
-        if ($6 ~ /^[^SDI]+$/) {
+            # CIGAR case with M only
+        if ($6 ~ /^[^SDNI]+$/) {
             a = $10
-            # "typical" CIGAR cases with insertions, deletions and partial clipping
+            # CIGAR cases with I,N,D,S
         }else{
             a = MM_extractor($10, ec)
         }
@@ -325,45 +353,66 @@ function TCRA_producer_simple(read, ec,      a, count) {
         tc_simple = "TC:i:0"
         sp = ","
         ra_simple = "RA:Z:" count["A"]+0 sp 0 sp 0 sp 0 sp 0 sp 0 sp count["C"]+0 sp 0 sp 0 sp 0 sp 0 sp 0 sp count["G"]+0 sp 0 sp 0 sp 0 sp 0 sp 0 sp count["T"]+0 sp 0 sp 0 sp 0 sp 0 sp 0 sp count["N"]+0 sp
+        xi_simple = "XI:f:1"
     }
 }
 
-# ---- main script ---- #
+# ---- main routine ---- #
 
- {
-    # get MD tag field if present
+# get MD tag field if present
+{
     if ($0 ~ /^.*MD:Z:.*$/){
-        md = tag_finder("MD:Z:")
-    }
-
-    # change YI to XI for slamdunk compatibility; keep in mind the values will be expressed as percentagesa fractions instead; only if BBmap YI tags are present
-    if ($0 ~ /^.*YI:f:.*$/){
-        gsub("YI:f:", "XI:f:", $0)
-    }
-
+    md = tag_finder("MD:Z:")
+}
     # skip header and modify @RG by adding DS. SM can be supplied as argument. To uses files normally produced by nf-core pipeline. Alternatively, STAR + Picard MarkDuplicates
     if ($1 ~ /^@/){
+        header=1
         if ($1 ~ /^@RG/){
-            print $1, $2, "DS:{'sequenced':0,'mapped':0,'filtered':0,'mqfiltered':0,'idfiltered':0,'nmfiltered':0,'multimapper':0,'dedup':0,'snps':0,'annotation':'','annotationmd5':''}", $3
+            #rg_line=$1
+        #    for (i=2; i<=NF; i++){
+            #    rg_line=rg_line","$i
+            #}
+            suf="DS:{'sequenced':0,'mapped':0,'filtered':0,'mqfiltered':0,'idfiltered':0,'nmfiltered':0,'multimapper':0,'dedup':0,'snps':0,'annotation':'','annotationmd5':''}"
+            #rg_line=$1 ", ID:" BAM_NAME ", SM:" BAM_NAME ":NA:NA," suf
+            print $1,"ID:"BAM_NAME,"SM:"BAM_NAME":NA:NA", suf
         }else{
                print $0
         }
-    # skip unmapped
-    }else if ($2 ~ /^101|133|165|69|77|141$/){
-    # use "simple" function that skips making MP if no mismatches are present (MP would otherwise be empty); second "if" condition is duplicated in the TCRA_producer_simple() function, maybe removed at some point...
-    }else if (gensub(/MD:Z:/, "", "g" , md) ~ /^[0-9]*(\^[ACTGN]+[0-9]+)*$/){
+    }else if ($1 !~ /^@/ && header==1){
+        header=0
+        print "@PG","ID:rebound.sh","VN:1.0","CL:"REBOUND_COMMAND
+        if (and($2, 0x4)){
+            print $0, "XI:f:0"
+        }else if (gensub(/MD:Z:/, "", "g", md) ~ /^[0-9]*(\^[ACTGN]+[0-9]+)*$/ || $6 ~ /^[^M]+$/){
+            ec=cigar_extender($6)
+            TCRA_producer_simple($10, ec)
+            print $0,xi_simple,tc_simple,ra_simple
+        }else{
+            ec=cigar_extender($6)
+            MM_extracted=MM_extractor($10, ec)
+            md_ext=MD_extender(md)
+            MP_producer(md, ec, $10)
+            TCRA_producer(MM_extracted, md_ext)
+            print $0,xi,tc,ra,mp
+        }
+    }else if (and($2, 0x4)){
+        print $0, "XI:f:0"
+    # }else if ((and($2, 0x10) && and($2, 0x80)) || (and($2, 0x20) && and($2, 0x40))){
+    #     print $0, "XI:f:0"
+    }else if (gensub(/MD:Z:/, "", "g", md) ~ /^[0-9]*(\^[ACTGN]+[0-9]+)*$/ || $6 ~ /^[^M]+$/){
         ec=cigar_extender($6)
         TCRA_producer_simple($10, ec)
-        print $0, tc_simple, ra_simple
+        print $0,xi_simple,tc_simple,ra_simple
     }else{
         ec=cigar_extender($6)
         MM_extracted=MM_extractor($10, ec)
         md_ext=MD_extender(md)
         MP_producer(md, ec, $10)
         TCRA_producer(MM_extracted, md_ext)
-        print $0, tc, ra, mp
+        print $0,xi,tc,ra,mp
         }
     }
+
 END{
     print "S(L)AM converter ended @ " strftime() > "/dev/stderr"
 }
