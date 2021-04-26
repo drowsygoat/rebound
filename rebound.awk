@@ -5,6 +5,28 @@ BEGIN {
 }
 
 # --- FUNCTIONS --- #
+function rcomp(read,    i){
+read_rc=""
+    for (i=length(read); i>0; i--){
+        if       (substr(read,i,1) == "A"){
+            read_rc = read_rc "T"
+        }else if (substr(read,i,1) == "T"){
+            read_rc = read_rc "A"
+        }else if (substr(read,i,1) == "G"){
+            read_rc = read_rc "C"
+        }else if (substr(read,i,1) == "C"){
+            read_rc = read_rc "G"
+        }else if (substr(read,i,1) == "N"){
+            read_rc = read_rc "N"
+        }else{
+            print "___________________________________________________"
+            print "Fatal error: Not a valid DNA base symbol in the read!" # > "/dev/stderr"
+            exit 1
+        }
+    }
+    return read_rc
+}
+
 function tag_finder(tag,    i){
     if (substr($0,1,1)!="@"){
         for (i=1; i<=NF+1; i++){
@@ -320,6 +342,8 @@ function TCRA_producer(MM_extracted, md_extended,    i){
     }
 }
 
+# FS FIP
+#
 function TCRA_producer_simple(read, ec,      a, count) {
     # use "simple" function also if reads were entirely clipped (cases of 100% overlap) == only S in CIGARS; this reads may actually be tossed completely, but they can be used for DE analysis when one wants to use exactly the same pool of reads for both, DE and SLAM-seq; in such sase, the reads would need to get the identi score of 1, otherwise will be filtered out
     # no matches and mismatches == full clip
@@ -362,10 +386,17 @@ function TCRA_producer_simple(read, ec,      a, count) {
 # get MD tag field if present
 {
     if ($0 ~ /^.*MD:Z:.*$/){
-    md = tag_finder("MD:Z:")
-}
+        md = tag_finder("MD:Z:")
+    }
+    if (N_IN_CIG == 1 && NF > 5){
+        gsub($6, gensub("N", "D", "g", $6), $0)
+    }
+    if ($0 ~ /^.*NM:i:.*$/){
+        ed_tag = "ED:i:" gensub("NM:i:", "", "g", tag_finder("NM:i:"))
+    }
     # skip header and modify @RG by adding DS. SM can be supplied as argument. To uses files normally produced by nf-core pipeline. Alternatively, STAR + Picard MarkDuplicates
     if ($1 ~ /^@/){
+        
         header=1
         if ($1 ~ /^@RG/){
             #rg_line=$1
@@ -376,39 +407,72 @@ function TCRA_producer_simple(read, ec,      a, count) {
             #rg_line=$1 ", ID:" BAM_NAME ", SM:" BAM_NAME ":NA:NA," suf
             print $1,"ID:"BAM_NAME,"SM:"BAM_NAME":NA:NA", suf
         }else{
-               print $0
+            print $0
         }
-    }else if ($1 !~ /^@/ && header==1){
+
+    }else if ($1 !~ /^@/ && header==1){ # first non-header record
+
         header=0
         print "@PG","ID:rebound.sh","VN:1.0","CL:"REBOUND_COMMAND
         if (and($2, 0x4)){
-            print $0, "XI:f:0"
+            print $0,"XI:f:0"
+
         }else if (gensub(/MD:Z:/, "", "g", md) ~ /^[0-9]*(\^[ACTGN]+[0-9]+)*$/ || $6 ~ /^[^M]+$/){
+
             ec=cigar_extender($6)
             TCRA_producer_simple($10, ec)
+            # this is an ugly hack to make this compatible with slamDunk in 4.3
+            if (and($2, 0x20) && and($2, 0x40)){
+                $2 = 145
+            }
+            if (and($2, 0x10) && and($2, 0x40)){
+                $2 = 161
+            }
             print $0,xi_simple,tc_simple,ra_simple
+
         }else{
+
             ec=cigar_extender($6)
             MM_extracted=MM_extractor($10, ec)
             md_ext=MD_extender(md)
             MP_producer(md, ec, $10)
             TCRA_producer(MM_extracted, md_ext)
+            if (and($2, 0x20) && and($2, 0x40)){
+                $2 = 145
+            }
+            if (and($2, 0x10) && and($2, 0x40)){
+                $2 = 161
+            }
             print $0,xi,tc,ra,mp
         }
+
     }else if (and($2, 0x4)){
         print $0, "XI:f:0"
-    # }else if ((and($2, 0x10) && and($2, 0x80)) || (and($2, 0x20) && and($2, 0x40))){
-    #     print $0, "XI:f:0"
+
     }else if (gensub(/MD:Z:/, "", "g", md) ~ /^[0-9]*(\^[ACTGN]+[0-9]+)*$/ || $6 ~ /^[^M]+$/){
         ec=cigar_extender($6)
         TCRA_producer_simple($10, ec)
+        if (and($2, 0x20) && and($2, 0x40)){
+            $2 = 145
+        }
+        if (and($2, 0x10) && and($2, 0x40)){
+            $2 = 161
+        }
         print $0,xi_simple,tc_simple,ra_simple
+
     }else{
+
         ec=cigar_extender($6)
         MM_extracted=MM_extractor($10, ec)
         md_ext=MD_extender(md)
         MP_producer(md, ec, $10)
         TCRA_producer(MM_extracted, md_ext)
+        if (and($2, 0x20) && and($2, 0x40)){
+            $2 = 145
+        }
+        if (and($2, 0x10) && and($2, 0x40)){
+            $2 = 161
+        }
         print $0,xi,tc,ra,mp
         }
     }

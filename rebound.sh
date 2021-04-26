@@ -11,20 +11,24 @@
 #.
 #. Usage:
 #.        rebound.sh  [ -a ]
-#.                    [ -o ]
-#.                    [ -r ] [ FASTA ]
-#.                    [ -m ]
-#.                    [ -p ]
-#.                    [ -c ]
-#.                    [ -n ]
-#.                    [ -x ]
-#.                    [ -t ]
-#.                    [ -d ]  BAM1, BAM1, ...
+#.                [ -o ]
+#.                [ -r ] [ FASTA ]
+#.                [ -m ]
+#.                [ -p ]
+#.                [ -c ]
+#.                [ -n ] (do not use)
+#.                [ -x ] (do not use)
+#.                [ -e ] (do not use)
+#.                [ -s ] (must be rev)
+#.                [ -d ]
+#.                [ -d ]
+#.                [ -t ]  BAM1, BAM1, ...
 #.
 #. Description:
 #.      This script adds SLAM-seq tags to BAM files, and thus allows to use
 #.      STAR or other aligner of choice for downstream analysis with the slamDunk
 #.      package. Can be used downstream of nf-core/rna-seq pipeline.
+#.      Currently works only for stranded sequencing with "reverse" strandedness.
 #.
 #. Prerequisites:
 #.      Samtools    ( https://anaconda.org/bioconda/samtools )
@@ -57,6 +61,7 @@
 #. -d       Force removing of duplicate reads based on bitwise flags.
 #.          Requires BAM files to have duplicates marked with Picard
 #.          MarkDuplicates or a similar tool.
+#. -g (1G)  Per thread memory block size for samtools sort.
 #. BAM      (required) BAM files to process (lists and wildcards [*] accepted).
 #. -h       Prints this help and overrides any remaining flags.
 
@@ -70,13 +75,16 @@ REBOUND_COMMAND="rebound.sh $@"
 usage() {
    echo "Usage: rebound.sh   [ -a ]
                     [ -o ]
-                    [ -r ] [ FASTA ]r
+                    [ -r ] [ FASTA ]
                     [ -m ]
                     [ -p ]
                     [ -c ]
                     [ -n ] (do not use)
                     [ -x ] (do not use)
+                    [ -e ] (do not use)
+                    [ -s ] (must be rev)
                     [ -d ]
+                    [ -g ]
                     [ -t ]  BAM1, BAM1, ...
 To get more help type: rebound.sh -h"
 
@@ -98,7 +106,7 @@ while [ $# -gt 0 ]
 do
     unset OPTIND
     unset OPTARG
-    while getopts ":a:o:r:mpdct:h" opcje
+    while getopts ":a:o:r:mpcs:dg:t:h" opcje
     do
     case $opcje in
         a) # Specify a path to AWK script.
@@ -116,11 +124,17 @@ do
         p) # Toogle sinle-end or paired-end (default is single-end).
             PAIRED_ARG=1
             ;;
+        c) # Whether to clip paird reads overlaps.
+            CLIP_ARG=1
+            ;;
+        s) # Strandedness.
+            STRANDEDNESS_ARG=${OPTARG}
+            ;;
         d) # Whether to filter out dups.
             NODUPS_ARG=1
             ;;
-        c) # Whether to clip paird reads overlaps.
-            CLIP_ARG=1
+        g) # Memory for samtools sort in G.
+            MEM_ARG=${OPTARG}
             ;;
         t) # Number of threads for samtools.
             THR_ARG=${OPTARG}
@@ -211,6 +225,7 @@ fi
 
 echo "$REF_ARG is used as genome reference"
 echo "Using $THR_ARG CPU thread(s)"
+echo "Using $MEM_ARG RAM per thread"
 
 if [[ $OUTDIR_ARG == "." ]]; then
     echo "Saving output files in the current directory as the [ -o ] flag was not set"
@@ -221,54 +236,57 @@ fi
 
 ##### main routine #####
 START_TIME=$SECONDS
-
 for BAM in $BAM_LIST
 do
     BAM_NAME=$( echo $BAM | xargs basename | awk -F. '{print $1}' )
     BAM_FILE=$( echo $BAM | xargs basename)
 
-    printf " ------------------\nProcessing %s\n ------------------\n" "$BAM_FILE"
+    printf " ------------------\n Processing %s\n ------------------\n" "$BAM_FILE"
 
     samtools view -@ $THR_ARG $BAM | head -10000 | gawk '{if ($6 ~ /N/){exit 0}}'
 
     if [ $? -eq 0 ]; then
-        echo "Found Ns in CIGARs, replacing with Ds"
+        echo "Found Ns in CIGARs, will be replaced with Ds"
         echo "(MD tags will be automatically updated)"
-        MD_ARG=1
-        samtools view -@ $THR_ARG -h $BAM | gawk '{if ($1 !~ /^@/) {gsub($6, gensub("N", "D", "g", $6), $0)} print $0}' | samtools view -@ $THR_ARG -h -u - > $OUTDIR_ARG/tmp_rebound.bam
-        BAM="$OUTDIR_ARG/tmp_rebound.bam"
+        NINCIG=1
     fi
 
+    echo "Strandedness is set to $STRANDEDNESS_ARG"
     echo "Preparing SLAM-seq tags"
 
     if [[ $NODUPS_ARG == 1 ]]; then
-        samtools view -@ $THR_ARG -h -F 1024 $BAM 2> $OUTDIR_ARG/stderr/$BAM_NAME\_samtools_stderr.txt
+        samtools view -@ $THR_ARG -h -F 1024 $BAM 2>> $OUTDIR_ARG/stderr/$BAM_NAME\_samtools_stderr.txt
     else
-        samtools view -@ $THR_ARG -h $BAM 2> $OUTDIR_ARG/stderr/$BAM_NAME\_samtools_stderr.txt
-    fi |\
-
-    if [[ $(samtools view -H $BAM | head -1) =~ ^.*oordinate.*$ ]]; then
-        cat
-    else
-        samtools sort -@ $THR_ARG -O sam - 2>> $OUTDIR_ARG/stderr/$BAM_NAME\_samtools_stderr.txt
+        samtools view -@ $THR_ARG -h $BAM 2>> $OUTDIR_ARG/stderr/$BAM_NAME\_samtools_stderr.txt
     fi |\
 
     if [[ $MD_ARG == 1 ]]; then
-        samtools calmd -@ $THR_ARG - $REF_ARG 2> $OUTDIR_ARG/stderr/$BAM_NAME\_calmd_stderr.txt
+        if [[ $(samtools view -H $BAM | head -1) =~ ^.*oordinate.*$ ]]; then
+            cat
+        else
+            samtools sort -m $MEM_ARG -@ $THR_ARG -T $OUTDIR_ARG -O sam - 2>> $OUTDIR_ARG/stderr/$BAM_NAME\_samtools_stderr.txt
+        fi |\
+        samtools calmd -@ $THR_ARG - $REF_ARG 2>> $OUTDIR_ARG/stderr/$BAM_NAME\_calmd_stderr.txt
     else
         cat
     fi |\
 
     if [[ $CLIP_ARG == 1 ]]; then
-        samtools sort -n -@ $THR_ARG -O sam - 2>> $OUTDIR_ARG/stderr/$BAM_NAME\_samtools_stderr.txt |\
-        bam clipOverlap --in - --out - --readName --storeOrig OC --stats 2> $OUTDIR_ARG/stderr/$BAM_NAME\_clipOverlap_stderr.txt |\
-        samtools sort -@ $THR_ARG -O sam - 2>> $OUTDIR_ARG/stderr/$BAM_NAME\_samtools_stderr.txt |\
+        samtools sort -n -m $MEM_ARG -@ $THR_ARG -T $OUTDIR_ARG -O sam - 2>> $OUTDIR_ARG/stderr/$BAM_NAME\_samtools_stderr.txt |\
+        bam clipOverlap --in - --out - --readName --storeOrig OC --stats 2>> $OUTDIR_ARG/stderr/$BAM_NAME\_clipOverlap_stderr.txt |\
+        samtools sort -m $MEM_ARG -@ $THR_ARG -T $OUTDIR_ARG -O sam - 2>> $OUTDIR_ARG/stderr/$BAM_NAME\_samtools_stderr.txt
+    else
+        cat
+    fi |\
+
+    if [[ $NINCIG == 1 ]]; then
+        gawk 'BEGIN{OFS="\t"}; function tag_finder(tag, i){for (i=1; i<=NF+1; i++){if (i==NF+1) {print "Fatal error: unable to find " tag " at record " $0; exit 1 } else if (substr($i,1,5)!=tag) {continue} else { return $i }}} {if ($1 ~ /^@/) { print $0 } else { gsub($6, gensub("N", "D", "g", $6), $0); if ($0 ~ /^.*NM:i:.*$/) { print $0, "ED:i:" gensub("NM:i:", "", "g", tag_finder("NM:i:")) } else { print $0 }}}' |\
         samtools calmd -@ $THR_ARG - $REF_ARG 2>> $OUTDIR_ARG/stderr/$BAM_NAME\_calmd_stderr.txt
     else
         cat
-    fi  |\
+    fi |\
 
-    gawk -v REBOUND_COMMAND="$REBOUND_COMMAND" -v BAM_NAME="$BAM_NAME" -f $AWK_FILE 2> $OUTDIR_ARG/stderr/$BAM_NAME\_rebound_stderr.txt 1> $OUTDIR_ARG/$BAM_NAME\_rebound_p.sam
+    gawk -v REBOUND_COMMAND="$REBOUND_COMMAND" -v BAM_NAME="$BAM_NAME" -v STRANDEDNESS="$STRANDEDNESS_ARG" -f $AWK_FILE 2> $OUTDIR_ARG/stderr/$BAM_NAME\_rebound_stderr.txt 1> $OUTDIR_ARG/$BAM_NAME\_reboundbig.sam
 
     if [ $? -eq 0 ]; then
         echo "Processing $BAM_FILE completed successfully"
@@ -277,19 +295,12 @@ do
         echo "Processing $BAM_FILE FAILED"
     fi
 
-    if [ $(stat $OUTDIR_ARG/stderr/$BAM_NAME\_calmd_stderr.txt | awk '{print $1}') -gt 1000000 ]; then
+    if [ $(stat $OUTDIR_ARG/stderr/$BAM_NAME\_calmd_stderr.txt | awk '{print $1}') -gt 100000 ]; then
         tail -1000 $OUTDIR_ARG/stderr/$BAM_NAME\_calmd_stderr.txt > $OUTDIR_ARG/stderr/calmd_stderr.tmp && cat $OUTDIR_ARG/stderr/calmd_stderr.tmp > $OUTDIR_ARG/stderr/$BAM_NAME\_calmd_stderr.txt
     fi
 
-    if ! [ -f $OUTDIR_ARG/tmp_rebound.bam ]; then
-        rm $OUTDIR_ARG/tmp_rebound.bam
-
-    fi
-
-    if ! [ -f $OUTDIR_ARG/stderr/calmd_stderr.tmp ]; then
-        rm $OUTDIR_ARG/stderr/calmd_stderr.tmp
-    fi
-
+    [ -f $OUTDIR_ARG/tmp_rebound.bam ] && rm $OUTDIR_ARG/tmp_rebound.bam
+    [ -f $OUTDIR_ARG/stderr/calmd_stderr.tmp ] && rm $OUTDIR_ARG/stderr/calmd_stderr.tmp
 done
 
 TOTAL_TIME=$(($SECONDS - $START_TIME))
