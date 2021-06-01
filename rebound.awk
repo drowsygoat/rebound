@@ -1,38 +1,26 @@
-BEGIN {
-    print "S(L)AM converter started @ " strftime() > "/dev/stderr"
-    OFS="\t"
-    FS="\t"
+BEGIN{
+start_time = systime()
+OFS="\t"
+FS="\t"
+for (n=0;n<256;n++){
+    phred_conv[sprintf("%c",n+33)]=n
+}
+print "S(L)AM converter started @ " strftime() > "/dev/stderr"
+if (MODE_ARG == "normal"){
+    if (NODUPS_ARG == 1){
+        print "gene_id", "AA", "AC", "AG", "AT", "CA", "CC", "CG", "CT", "GA", "GC", "GG", "GT", "TA", "TC", "TG", "TT", "DUP" > OUTDIR_ARG "/" BAM_NAME "_slam_counts.txt"
+    }else{
+        print "gene_id", "AA", "AC", "AG", "AT", "CA", "CC", "CG", "CT", "GA", "GC", "GG", "GT", "TA", "TC", "TG", "TT" > OUTDIR_ARG "/" BAM_NAME "_slam_counts.txt"
+    }
 }
 
 # --- FUNCTIONS --- #
-function rcomp(read,    i){
-read_rc=""
-    for (i=length(read); i>0; i--){
-        if       (substr(read,i,1) == "A"){
-            read_rc = read_rc "T"
-        }else if (substr(read,i,1) == "T"){
-            read_rc = read_rc "A"
-        }else if (substr(read,i,1) == "G"){
-            read_rc = read_rc "C"
-        }else if (substr(read,i,1) == "C"){
-            read_rc = read_rc "G"
-        }else if (substr(read,i,1) == "N"){
-            read_rc = read_rc "N"
-        }else{
-            print "___________________________________________________"
-            print "Fatal error: Not a valid DNA base symbol in the read!" # > "/dev/stderr"
-            exit 1
-        }
-    }
-    return read_rc
-}
 
 function tag_finder(tag,    i){
     if (substr($0,1,1)!="@"){
         for (i=1; i<=NF+1; i++){
             if (i==NF+1) {
-                print "___________________________________________________"
-                print "Fatal error: unable to find " tag " at record " $0 # > "/dev/stderr"
+                print "Fatal error: unable to find " tag " at record " $0 > "/dev/stderr"
                 exit 1
             }else if (substr($i,1,5)!=tag){
                 continue
@@ -43,12 +31,17 @@ function tag_finder(tag,    i){
     }
 }
 
-function MD_extender(md,  out,a,b) {
+function rmcol(col,     i){
+    for (i=col; i<NF; i++){
+        $i = $(i+1)
+    }
+    NF--
+}
+
+function MD_extender(md,    out,a,b) {
     out=""
-    # print md, "md in fucntion"
     match(md,/MD:Z:/)
     a=substr(md,RSTART+RLENGTH)
-
     while(match(a,/\^[A-Z]+/)) {
         a=substr(a,1,RSTART-1) "h" substr(a,RSTART+RLENGTH)
     }
@@ -63,16 +56,16 @@ function MD_extender(md,  out,a,b) {
                 out=out
         }
     }
-    return out ####
+    return out
 }
-# returns matched+mismatched portion (--> out) of the original read (read) as an array (--> cr)
-function MM_extractor(read, ec,     a,b,j,i,k,out) {
-    out=""
+# returns matched + mismatched (M) portion of the reads and corresponding quality string
+function MM_extractor(read, quali, ec,     a,b,j,i,k) {
+    mm_read=""; mm_quali=""
+    split(quali, c, "")
     split(read, b, "")
     split(ec, a, "")
     j=1
     for (i in a) {
-        # print a[i], i
         if (a[i] ~ /[I]/) {
             j++
             continue
@@ -82,18 +75,19 @@ function MM_extractor(read, ec,     a,b,j,i,k,out) {
         }else if (a[i] ~ /[DN]/) {
             continue
         }else if (a[i] ~ /[M]/) {
-            out = out b[j]
+            mm_read = mm_read b[j]
+            mm_quali = mm_quali c[j]
             j++
             continue
         }else{
-            print "Fatal error: Unexpected character(s) in CIGAR string of read" $1
+            print "Fatal error: Unexpected character(s) in CIGAR string of read" $0 > "/dev/stderr"
             exit 1
         }
     }
-    return out
 }
+
 function cigar_extender(cygaro,   out, b,i,j){
-    # expands CIGAR string into a longer string (out) with a single letter per alignment position; works for CIGARs with [SIDNM] operations
+    # expand CIGAR string into a longer string (out) with a single letter per alignment position; works for CIGARs with [SIDNM] operations
     out = ""
     n = patsplit(cygaro, b, /[^[:digit:]]/, seps)
     # loop through CIGAR "segments" to get their lengths (--> seps)
@@ -105,6 +99,7 @@ function cigar_extender(cygaro,   out, b,i,j){
    }
    return out
 }
+
 function MP_producer(MD_input, ec, read,      a, b){
     # outputs array (read_mis) with mismatched bases in the read, and their respective indices; if there are not gaps in the alignment, and if nothing was clipped from the read, these indices are identical to the indices of the mismatched reference bases; indexing starts from the start of the alignment;
     # arrays ref_mis and read_mis contain mismatched bases and their positions (with respect to start of the alignment); an offset array is populated that contains offset values for consecutive pairs; in case of reads that have no I, D, N, or S in their CIGARs the values in read_mis and ref_mis are identical
@@ -114,10 +109,9 @@ function MP_producer(MD_input, ec, read,      a, b){
     while(match(a,/\^[A-Z]+/)) {
         a=substr(a,1,RSTART-1) "h" RLENGTH-1 "^" substr(a,RSTART+RLENGTH)
     }
-    # print "a", a
     n=patsplit(a, b, /[[:alpha:]^]/, seps)
     for(i=1; i<=n; i++){
-        #print "sepsi",seps[i], i
+        # print "sepsi", seps[i], i
         if (seps[i] == ""){
             seps[i] = 0
         }
@@ -128,15 +122,10 @@ function MP_producer(MD_input, ec, read,      a, b){
         }else{
             sum_md+=seps[i-1]+1
         }
-        # print "sum_md",sum_md
         if (b[i]!="^" && b[i]!="h"){
             ref_mis[sum_md]=b[i]
         }
     }
-    # for (i in ref_mis){
-    #     print "ref_misi",ref_mis[i], i
-    # }
-    # print ec
     for (i in ref_mis){
         j=0
         k=0
@@ -152,15 +141,9 @@ function MP_producer(MD_input, ec, read,      a, b){
                 j--
                 k++ # only deletions/introns need to be acounted for to match the positions in CIGARs
             }
-            # print "j",j
-            # print offset[i], i,"offset"
-                # offset[i] = j
         }
 
         offset[i] = j
-
-        # print i, j, i+j
-        # print substr(read,i+j,1), "substr"
         read_mis[i+j] = substr(read,i+j,1)
 
         mp = "MP:Z:"
@@ -248,116 +231,152 @@ function MP_producer(MD_input, ec, read,      a, b){
                 cnt++
             }
         }
-        # remove later, this should never be required
-        # gsub(",,*" , "," , mp)
-        # gsub("MP:Z:," , "MP:Z:" , mp)
         if (length(ref_mis) == 0){
             print "This should not have happened" > "/dev/stderr"
             exit 1
         }
     }
-#     for (i in offset) {
-#     print offset[i],i, "off"
-# }
 }
 
-function TCRA_producer(MM_extracted, md_extended,    i){
-    delete count; delete mmms
-    split(MM_extracted, mm_split, "")
+function TCRA_producer(mm_read_, mm_quali_, md_extended,    i){
+    delete count; delete mmms; delete quali
+    split(mm_read_, mm_read_split, "")
+    split(mm_quali_, mm_quali_split, "")
     split(md_extended, md_split, "")
-    for (i=1; i<=length(mm_split); i++) {
-        if (md_split[i] == ".") {
-            mmms[i] = mm_split[i] mm_split[i]
+    if (length(mm_read_split) != length(mm_quali_split)){
+        print "Strings of different lengths. This should not have happened. Record:" > "/dev/stderr"
+        print $0 > "/dev/stderr"
+        exit 1
+    }
+    for (i=1; i<=length(mm_read_split); i++) {
+        if (md_split[i] == "."){
+            mmms[i] = mm_read_split[i] mm_read_split[i]
         }else{
-            mmms[i] = md_split[i] mm_split[i]
+            mmms[i] = md_split[i] mm_read_split[i]
         }
+    }
+    if (length(mmms) != length(mm_quali_split)){
+        print "Strings of different lengths. This should not have happened. Record:" > "/dev/stderr"
+        print $0 > "/dev/stderr"
+        exit 1
     }
     for (i in mmms) {
-        if       (mmms[i] == "AA"){
-            count["AA"]++
-        }else if (mmms[i] == "AC"){
-            count["AC"]++
-        }else if (mmms[i] == "AG"){
-            count["AG"]++
-        }else if (mmms[i] == "AT"){
-            count["AT"]++
-        }else if (mmms[i] == "AN"){
-            count["AN"]++
-        }else if (mmms[i] == "CA"){
-            count["CA"]++
-        }else if (mmms[i] == "CC"){
-            count["CC"]++
-        }else if (mmms[i] == "CG"){
-            count["CG"]++
-        }else if (mmms[i] == "CT"){
-            count["CT"]++
-        }else if (mmms[i] == "CN"){
-            count["CN"]++
-        }else if (mmms[i] == "GA"){
-            count["GA"]++
-        }else if (mmms[i] == "GC"){
-            count["GC"]++
-        }else if (mmms[i] == "GG"){
-            count["GG"]++
-        }else if (mmms[i] == "GT"){
-            count["GT"]++
-        }else if (mmms[i] == "GN"){
-            count["GN"]++
-        }else if (mmms[i] == "TA"){
-            count["TA"]++
-        }else if (mmms[i] == "TC"){
-            count["TC"]++
-        }else if (mmms[i] == "TG"){
-            count["TG"]++
-        }else if (mmms[i] == "TT"){
-            count["TT"]++
-        }else if (mmms[i] == "TN"){
-            count["TN"]++
-        }else if (mmms[i] == "NA"){
-            count["NA"]++
-        }else if (mmms[i] == "NC"){
-            count["NC"]++
-        }else if (mmms[i] == "NG"){
-            count["NG"]++
-        }else if (mmms[i] == "NT"){
-            count["NT"]++
-        }else if (mmms[i] == "NN"){
-            count["NN"]++
+        if (phred_conv[mm_quali_split[i]] >= MISMATCH_QUALITY){
+            ###### A -> X
+            }if (mmms[i] == "AG"){
+                if ((and($2, 0x10) && and($2, 0x80)) || (and($2, 0x20) && and($2, 0x40)) || $2 == 16){
+                    if (phred_conv[mm_quali_split[i]] >= MISMATCH_QUALITY_TC){
+                        count["AG"]++
+                    }
+                }else{
+                    count["AG"]++
+                }
+            }else if (mmms[i] == "AA"){
+                count["AA"]++
+            }else if (mmms[i] == "AC"){
+                count["AC"]++
+            }else if (mmms[i] == "AT"){
+                count["AT"]++
+            }else if (mmms[i] == "AN"){
+                count["AN"]++
+                # quali["AN"]=quali["AN"]+(1-10^(-(phred_conv[mm_quali_split[i]]/10)))
+
+            ###### C -> X
+            }else if (mmms[i] == "CA"){
+                count["CA"]++
+            }else if (mmms[i] == "CC"){
+                count["CC"]++
+            }else if (mmms[i] == "CG"){
+                count["CG"]++
+            }else if (mmms[i] == "CT"){
+                count["CT"]++
+            }else if (mmms[i] == "CN"){
+                count["CN"]++
+                # quali["CN"]=quali["CN"]+(1-10^(-(phred_conv[mm_quali_split[i]]/10)))
+
+            ###### G -> X
+            }else if (mmms[i] == "GA"){
+                count["GA"]++
+            }else if (mmms[i] == "GC"){
+                count["GC"]++
+            }else if (mmms[i] == "GG"){
+                count["GG"]++
+            }else if (mmms[i] == "GT"){
+                count["GT"]++
+            }else if (mmms[i] == "GN"){
+                count["GN"]++
+                # quali["GN"]=quali["GN"]+(1-10^(-(phred_conv[mm_quali_split[i]]/10)))
+
+            ###### T -> X
+            }else if (mmms[i] == "TA"){
+                count["TA"]++
+            }else if (mmms[i] == "TC"){
+                if ((and($2, 0x20) && and($2, 0x80)) || (and($2, 0x10) && and($2, 0x40)) || $2 == 0){
+                    if (phred_conv[mm_quali_split[i]] >= MISMATCH_QUALITY_TC){
+                        count["TC"]++
+                    }
+                }else{
+                    count["TC"]++
+                }
+            }else if (mmms[i] == "TG"){
+                count["TG"]++
+            }else if (mmms[i] == "TT"){
+                count["TT"]++
+            }else if (mmms[i] == "TN"){
+                count["TN"]++
+                # quali["TT"]=quali["TT"]+(1-10^(-(phred_conv[mm_quali_split[i]]/10)))
+
+            ###### N -> X
+            }else if (mmms[i] == "NA"){
+                count["NA"]++
+            }else if (mmms[i] == "NC"){
+                count["NC"]++
+            }else if (mmms[i] == "NG"){
+                count["NG"]++
+            }else if (mmms[i] == "NT"){
+                count["NT"]++
+            }else if (mmms[i] == "NN"){
+                count["NN"]++
+            # print "true"
+        # }else{
+            # print "false"
         }
     }
-    # reverse strand + first in pair or forward strand + second in pair
-    if ((and($2, 0x20) && and($2, 0x80)) || (and($2, 0x10) && and($2, 0x40))){
-        tc = "TC:i:" count["TC"]+0
-    #reverse strand + second in pair or forward strand + first in pair
-    }else if ((and($2, 0x10) && and($2, 0x80)) || (and($2, 0x20) && and($2, 0x40))){
-        tc = "TC:i:" count["AG"]+0
+    # write TC tags, only needed for slamdunk mode
+    # reverse strand + first in pair or forward strand + second in pair or forward unpaired
+    if ((and($2, 0x20) && and($2, 0x80)) || (and($2, 0x10) && and($2, 0x40)) || $2 == 0){
+        tc = count["TC"]+0
+    #reverse strand + second in pair or forward strand + first in pair or reverse unpaired
+    }else if ((and($2, 0x10) && and($2, 0x80)) || (and($2, 0x20) && and($2, 0x40)) || $2 == 16){
+        tc = count["AG"]+0
     }
     sp = ","
-    ra = "RA:Z:" count["AA"]+0 sp count["AC"]+0 sp count["AG"]+0 sp count["AT"]+0 sp count["AN"]+0 sp count["CA"]+0 sp count["CC"]+0 sp count["CG"]+0 sp count["CT"]+0 sp count["CN"]+0 sp count["GA"]+0 sp count["GC"]+0 sp count["GG"]+0 sp count["GT"]+0 sp count["GN"]+0 sp count["TA"]+0 sp count["TC"]+0 sp count["TG"]+0 sp count["TT"]+0 sp count["TN"]+0 sp count["NA"]+0 sp count["NC"]+0 sp count["NG"]+0 sp count["NT"]+0 sp count["NN"]+0 sp
+    ra =      count["AA"]+0 sp count["AC"]+0 sp count["AG"]+0 sp count["AT"]+0 sp count["AN"]+0 sp count["CA"]+0 sp count["CC"]+0 sp count["CG"]+0 sp count["CT"]+0 sp count["CN"]+0 sp count["GA"]+0 sp count["GC"]+0 sp count["GG"]+0 sp count["GT"]+0 sp count["GN"]+0 sp count["TA"]+0 sp count["TC"]+0 sp count["TG"]+0 sp count["TT"]+0 sp count["TN"]+0 sp count["NA"]+0 sp count["NC"]+0 sp count["NG"]+0 sp count["NT"]+0 sp count["NN"]+0 sp
 
     if (count["AC"] + count["AG"] + count["AT"] + count["AN"] + count["CA"] + count["CG"] + count["CT"] + count["CN"] + count["GA"] + count["GC"] + count["GT"] + count["GN"] + count["TA"] + count["TC"] + count["TG"] + count["TN"] + count["NA"] + count["NC"] + count["NG"] + count["NT"] + count["NN"] > 0){
-        xi = "XI:f:"(count["AA"] + count["CC"] + count["GG"] + count["TT"] + 0) / (count["AA"] + count["AC"] + count["AG"] + count["AT"] + count["AN"] + count["CA"] + count["CC"] + count["CG"] + count["CT"] + count["CN"] + count["GA"] + count["GC"] + count["GG"] + count["GT"] + count["GN"] + count["TA"] + count["TC"] + count["TG"] + count["TT"] + count["TN"] + count["NA"] + count["NC"] + count["NG"] + count["NT"] + count["NN"])
-    }else{
-        xi = "XI:f:0"
+
+        xi = (count["AA"] + count["CC"] + count["GG"] + count["TT"] + 0) / (count["AA"] + count["AC"] + count["AG"] + count["AT"] + count["AN"] + count["CA"] + count["CC"] + count["CG"] + count["CT"] + count["CN"] + count["GA"] + count["GC"] + count["GG"] + count["GT"] + count["GN"] + count["TA"] + count["TC"] + count["TG"] + count["TT"] + count["TN"] + count["NA"] + count["NC"] + count["NG"] + count["NT"] + count["NN"])
+        # keeping Ns, as they may signify a bad read (?)
+    }else{ # there reads with zero counts will not be included anyways
+        xi = 0
     }
 }
 
-# FS FIP
-#
-function TCRA_producer_simple(read, ec,      a, count) {
-    # use "simple" function also if reads were entirely clipped (cases of 100% overlap) == only S in CIGARS; this reads may actually be tossed completely, but they can be used for DE analysis when one wants to use exactly the same pool of reads for both, DE and SLAM-seq; in such sase, the reads would need to get the identi score of 1, otherwise will be filtered out
-    # no matches and mismatches == full clip
-    if ($6 ~ /^[^M]+$/){
-        tc_simple = "TC:i:0"
-        ra_simple = "RA:Z:0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,"
-        xi_simple = "XI:f:0" # may be set to 1 if filtering of reads with no Ms in CIGARs is not desired
+function TCRA_producer_simple(read, ec,     a, count) {
+    # use this for reads with no mismatches and also if reads were entirely clipped (cases of 100% overlap) == only S in CIGARS; this reads may actually be tossed completely, but they can be used for DE analysis when one wants to use exactly the same pool of reads for both, DE and SLAM-seq; in such sase, the reads would need to get the identi score of 1, otherwise will be filtered out; currenyl these reads are included in the resulting BAM file, but not in the counts, and they don't contribute to T coverage
+    if ($6 ~ /^[^M]+$/){ # no matches and mismatches == full clip
+        print "Warning: first condition in TC simple function is met at record: " $0 > "/dev/stderr"
+        tc_simple = 0
+        ra_simple = "0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,"
+        xi_simple = 0 # may be set to 1 if filtering of reads with no Ms in CIGARs is not desired
     }else{
-            # CIGAR case with M only
+        # CIGAR case with M only # switch if statement order here
         if ($6 ~ /^[^SDNI]+$/) {
             a = $10
-            # CIGAR cases with I,N,D,S
+        # CIGAR cases with I,N,D,S
         }else{
-            a = MM_extractor($10, ec)
+            MM_extractor($10, $11, ec)
+            a = mm_read
         }
         delete(count)
         split(a, a_split, "")
@@ -374,109 +393,210 @@ function TCRA_producer_simple(read, ec,      a, count) {
                 count["N"]++
             }
         }
-        tc_simple = "TC:i:0"
+        tc_simple = 0
         sp = ","
-        ra_simple = "RA:Z:" count["A"]+0 sp 0 sp 0 sp 0 sp 0 sp 0 sp count["C"]+0 sp 0 sp 0 sp 0 sp 0 sp 0 sp count["G"]+0 sp 0 sp 0 sp 0 sp 0 sp 0 sp count["T"]+0 sp 0 sp 0 sp 0 sp 0 sp 0 sp count["N"]+0 sp
-        xi_simple = "XI:f:1"
+        ra_simple = count["A"]+0 sp 0 sp 0 sp 0 sp 0 sp 0 sp count["C"]+0 sp 0 sp 0 sp 0 sp 0 sp 0 sp count["G"]+0 sp 0 sp 0 sp 0 sp 0 sp 0 sp count["T"]+0 sp 0 sp 0 sp 0 sp 0 sp 0 sp count["N"]+0 sp
+        ra_rc_simple = count["T"]+0 sp 0 sp 0 sp 0 sp 0 sp 0 sp count["G"]+0 sp 0 sp 0 sp 0 sp 0 sp 0 sp count["C"]+0 sp 0 sp 0 sp 0 sp 0 sp 0 sp count["A"]+0 sp 0 sp 0 sp 0 sp 0 sp 0 sp count["N"]+0 sp
+        xi_simple = 1
     }
 }
 
 # ---- main routine ---- #
 
-# get MD tag field if present
 {
-    if ($0 ~ /^.*MD:Z:.*$/){
-        md = tag_finder("MD:Z:")
-    }
-    if (N_IN_CIG == 1 && NF > 5){
-        gsub($6, gensub("N", "D", "g", $6), $0)
-    }
-    if ($0 ~ /^.*NM:i:.*$/){
-        ed_tag = "ED:i:" gensub("NM:i:", "", "g", tag_finder("NM:i:"))
-    }
-    # skip header and modify @RG by adding DS. SM can be supplied as argument. To uses files normally produced by nf-core pipeline. Alternatively, STAR + Picard MarkDuplicates
     if ($1 ~ /^@/){
-        
         header=1
         if ($1 ~ /^@RG/){
-            #rg_line=$1
-        #    for (i=2; i<=NF; i++){
-            #    rg_line=rg_line","$i
-            #}
-            suf="DS:{'sequenced':0,'mapped':0,'filtered':0,'mqfiltered':0,'idfiltered':0,'nmfiltered':0,'multimapper':0,'dedup':0,'snps':0,'annotation':'','annotationmd5':''}"
-            #rg_line=$1 ", ID:" BAM_NAME ", SM:" BAM_NAME ":NA:NA," suf
+            suf="DS:{'sequenced':0,'mapped':0,'filtered':0,'mqfiltered':0,'idfiltered':0,'nmfiltered':0,'multimapper':0,'dedup':0,'snps':0,'annotation':'','annotationmd5':''}" # irrelevant, update to include relevant data from sample table
+            # rg_line=$1 ", ID:" BAM_NAME ", SM:" BAM_NAME ":NA:NA," suf
             print $1,"ID:"BAM_NAME,"SM:"BAM_NAME":NA:NA", suf
         }else{
             print $0
         }
-
-    }else if ($1 !~ /^@/ && header==1){ # first non-header record
-
-        header=0
-        print "@PG","ID:rebound.sh","VN:1.0","CL:"REBOUND_COMMAND
-        if (and($2, 0x4)){
-            print $0,"XI:f:0"
-
-        }else if (gensub(/MD:Z:/, "", "g", md) ~ /^[0-9]*(\^[ACTGN]+[0-9]+)*$/ || $6 ~ /^[^M]+$/){
-
-            ec=cigar_extender($6)
-            TCRA_producer_simple($10, ec)
-            # this is an ugly hack to make this compatible with slamDunk in 4.3
-            if (and($2, 0x20) && and($2, 0x40)){
-                $2 = 145
-            }
-            if (and($2, 0x10) && and($2, 0x40)){
-                $2 = 161
-            }
-            print $0,xi_simple,tc_simple,ra_simple
-
+    }
+    if ($1 !~ /^@/){
+        ############################## Determine strand ###################################
+        if ((and($2, 0x20) && and($2, 0x80)) || (and($2, 0x10) && and($2, 0x40)) || $2 == 0){
+            strand2 = "forward"
+        }else if ((and($2, 0x10) && and($2, 0x80)) || (and($2, 0x20) && and($2, 0x40)) || $2 == 16){
+            strand2 = "reverse"
         }else{
-
-            ec=cigar_extender($6)
-            MM_extracted=MM_extractor($10, ec)
-            md_ext=MD_extender(md)
-            MP_producer(md, ec, $10)
-            TCRA_producer(MM_extracted, md_ext)
-            if (and($2, 0x20) && and($2, 0x40)){
-                $2 = 145
+            strand2 = "undetermined"
+        }
+        ############################## Get tags ###################################
+        if ($0 ~ /^.*MD:Z:.*$/){ # get MD tag field if present
+            md = tag_finder("MD:Z:")
+            md_value = gensub(/MD:Z:/, "", "g", md)
+        }
+        if ($0 ~ /^.*XF:Z:.*$/){ # get XF tag field if present
+            xf = tag_finder("XF:Z:")
+            xf_value = gensub(/XF:Z:/, "", "g", xf)
+        }
+        if (MAPPER_ARG == "star"){
+            if ($0 ~ /^.*ED:i:.*$/){ # get ED tag field if present
+                ed = tag_finder("ED:i:")
+                ed_value = gensub(/ED:i:/, "", "g", ed)
             }
-            if (and($2, 0x10) && and($2, 0x40)){
-                $2 = 161
+            ############################## Convert tags ###################################
+            for (i=1; i<=NF+1; i++){ # converting ED tag to recover NM tag (original NM tags Ns were replaced with Ds, and recalculated NM values were inflated)
+                if (substr($i,1,5)=="NM:i:"){
+                    $i=ed
+                    break
+                }else if (i==NF+1) {
+                    print "Error: unable to find NM tag at record " $0 > "/dev/stderr"
+                    exit 1
+                }
             }
-            print $0,xi,tc,ra,mp
-        }
-
-    }else if (and($2, 0x4)){
-        print $0, "XI:f:0"
-
-    }else if (gensub(/MD:Z:/, "", "g", md) ~ /^[0-9]*(\^[ACTGN]+[0-9]+)*$/ || $6 ~ /^[^M]+$/){
-        ec=cigar_extender($6)
-        TCRA_producer_simple($10, ec)
-        if (and($2, 0x20) && and($2, 0x40)){
-            $2 = 145
-        }
-        if (and($2, 0x10) && and($2, 0x40)){
-            $2 = 161
-        }
-        print $0,xi_simple,tc_simple,ra_simple
-
-    }else{
-
-        ec=cigar_extender($6)
-        MM_extracted=MM_extractor($10, ec)
-        md_ext=MD_extender(md)
-        MP_producer(md, ec, $10)
-        TCRA_producer(MM_extracted, md_ext)
-        if (and($2, 0x20) && and($2, 0x40)){
-            $2 = 145
-        }
-        if (and($2, 0x10) && and($2, 0x40)){
-            $2 = 161
-        }
-        print $0,xi,tc,ra,mp
+            for (i=1; i<=NF+1; i++){ # removing ED tag after converting it to NM tag
+                if (substr($i,1,5)=="ED:i:"){
+                    rmcol(i)
+                    break
+                }else if (i==NF+1) {
+                    print "Error: unable to find ED tag at record " $0 > "/dev/stderr"
+                    exit 1
+                }
+            }
+        }else if (MAPPER_ARG == "bbmap"){
+            if ($0 ~ /^.*YI:f:.*$/){ # get YI tag field if present
+                ed = tag_finder("YI:f:")
+                ed_value = gensub(/YI:f:/, "", "g", ed)
+                ed_value = ed_value/100
+            }
         }
     }
+    # skip header and modify @RG by adding DS. SM can be supplied as argument.
+    if ($1 !~ /^@/ && $6 !~ /^[^M]+$/){ # only include reads with  matches to the template (many reads like this are a result of overlap clipping)
+        stats["reads_with_M_in_cig"]++
+        if (header==1){ # first non-header record
+            header=0
+            print "@PG","ID:rebound.sh","VN:1.0","CL:"REBOUND_COMMAND
+        }
+        # if (and($2, 0x4)){ # commented to exclude unmapped
+        #     print $0,"XI:f:0"
+        if (md_value ~ /^[0-9]*(\^[ACTGN]+[0-9]+)*$/){
+            stats["reads_without_mismatches"]++
+            ec=cigar_extender($6)
+            TCRA_producer_simple($10, ec)
+            # if (MAPPER_ARG == "bbmap"){
+            #     ed_value=xi_simple
+            # }
+            if ($5 >= MAPQ_FILTER && ed_value <= NM_FILTER && xi_simple >= MISMATCH_FILTER){
+                stats["reads_without_mismatches_filtered"]++
+                if (MODE_ARG == "slamdunk"){
+                    print $0,"XI:f:"xi_simple,"TC:i:"tc_simple,"RA:Z:"ra_simple
+                }else if (MODE_ARG == "normal"){
+                    print $0,"XI:f:"xi_simple,"TC:i:"tc_simple,"RA:Z:"ra_simple
+                    if (xf !~ /_ambiguous|_no_feature|_too_low_aQual|_not_aligned|_alignment_not_unique/){  # move this filter before tha main loop to avoid processing of reads that will be excluded anyways by HTseq
+                        split(xf_value,a,"__") # only if annotation is appended with strandedness
+                        gene_id = a[1]; strand = a[2]
+                        split(ra_simple,b,",")
+                        if ((strand == "+" && strand2 == "reverse") || (strand == "-" && strand2 == "forward")){ # make a conditional to print only first record like this
+                            print "Warning: conflicting strandedness information between BAM and GTF files. Read skipped." > "/dev/stderr"
+                            print $0 > "/dev/stderr"
+                        }else{
+                            stats["reads_without_mismatches_filtered_final"]++
+                            if (strand == "+" || strand2 == "forward"){
+                                if (NODUPS_ARG == 1){
+                                    if (and($2, 0x400)){
+                                        print gene_id, b[1], 0, 0, 0, 0, b[7], 0, 0, 0, 0, b[13], 0, 0, 0, 0, b[19], "T" > OUTDIR_ARG "/" BAM_NAME "_slam_counts.txt"
+                                    }else{
+                                        print gene_id, b[1], 0, 0, 0, 0, b[7], 0, 0, 0, 0, b[13], 0, 0, 0, 0, b[19], "F" > OUTDIR_ARG "/" BAM_NAME "_slam_counts.txt"
+                                    }
+                                }else{
+                                    print gene_id, b[1], 0, 0, 0, 0, b[7], 0, 0, 0, 0, b[13], 0, 0, 0, 0, b[19] > OUTDIR_ARG "/" BAM_NAME "_slam_counts.txt"
+                                }
+                            }else if (strand == "-" || strand2 == "reverse"){
+                                if (NODUPS_ARG == 1){
+                                    if (and($2, 0x400)){
+                                        print gene_id, b[19], 0, 0, 0, 0, b[13], 0, 0, 0, 0, b[7], 0, 0, 0, 0, b[1], "T" > OUTDIR_ARG "/" BAM_NAME "_slam_counts.txt"
+                                    }else{
+                                        print gene_id, b[19], 0, 0, 0, 0, b[13], 0, 0, 0, 0, b[7], 0, 0, 0, 0, b[1], "F" > OUTDIR_ARG "/" BAM_NAME "_slam_counts.txt"
+                                    }
+                                }else{
+                                    print gene_id, b[19], 0, 0, 0, 0, b[13], 0, 0, 0, 0, b[7], 0, 0, 0, 0, b[1] > OUTDIR_ARG "/" BAM_NAME "_slam_counts.txt"
+                                }
+                            }else{
+                                print "Error: Cannot determine strandedness. Script terminated." > "/dev/stderr"
+                                print $0 > "/dev/stderr"
+                                exit 1 # remove later, this likely only problematic is slamdunk mode, affects only reads which were paired, but did not have a mate (pair orientation is used to determine strandedness).
+                            }
+                        }
+                    }
+                }
+            }
+        }else{
+            stats["reads_with_mismatches"]++
+            ec=cigar_extender($6)
+            MM_extractor($10, $11, ec)
+            md_ext=MD_extender(md)
+            TCRA_producer(mm_read, mm_quali, md_ext)
+            # if (MAPPER_ARG == "bbmap"){
+            #     ed_value=xi
+            # }
+            if ($5 >= MAPQ_FILTER && ed_value <= NM_FILTER && xi >= MISMATCH_FILTER){
+                stats["reads_with_mismatches_filtered"]++
+                if (MODE_ARG == "slamdunk"){ # MP tags are made and added extra
+                    MP_producer(md, ec, $10)
+                    print $0,"XI:f:"xi,"TC:i:"tc,"RA:Z:"ra,mp
+                }else if (MODE_ARG == "normal"){
+                    print $0,"XI:f:"xi,"TC:i:"tc,"RA:Z:"ra
+                    if (xf !~ /__ambiguous|__no_feature|_too_low_aQual|__not_aligned|__alignment_not_unique/){ # move this filter before tha main loop to avoid processing of reads that will be excluded anyways by HTseq
+                        split(xf_value,a,"__") # only if annotation is appended with strandedness
+                        gene_id = a[1]; strand = a[2]
+                        split(ra,b,",")
+                        if ((strand == "+" && strand2 == "reverse") || (strand == "-" && strand2 == "forward")){
+                            print "Warning: conflicting strandedness information between BAM and GTF files. Read skipped." > "/dev/stderr"
+                            print $0 > "/dev/stderr"
+                        }else{
+                            stats["reads_with_mismatches_filtered_final"]++
+                            if (strand == "+" || strand2 == "forward"){
+                                if (NODUPS_ARG == 1){
+                                    if (and($2, 0x400)){
+                                        print gene_id, b[1], b[2], b[3], b[4], b[6], b[7], b[8], b[9], b[11], b[12], b[13], b[14], b[16], b[17], b[18], b[19], "T" > OUTDIR_ARG "/" BAM_NAME "_slam_counts.txt"
+                                    }else{
+                                        print gene_id, b[1], b[2], b[3], b[4], b[6], b[7], b[8], b[9], b[11], b[12], b[13], b[14], b[16], b[17], b[18], b[19], "F" > OUTDIR_ARG "/" BAM_NAME "_slam_counts.txt"
+                                    }
+                                }else{
+                                    print gene_id, b[1], b[2], b[3], b[4], b[6], b[7], b[8], b[9], b[11], b[12], b[13], b[14], b[16], b[17], b[18], b[19] > OUTDIR_ARG "/" BAM_NAME "_slam_counts.txt"
+                                }
+                            }else if (strand == "-" || strand2 == "reverse"){
+                                if (NODUPS_ARG == 1){
+                                    if (and($2, 0x400)){
+                                        print gene_id, b[19], b[18], b[17], b[16], b[14], b[13], b[12], b[11], b[9], b[8], b[7], b[6], b[4], b[3], b[2], b[1], "T" > OUTDIR_ARG "/" BAM_NAME "_slam_counts.txt"
+                                        }else{
+                                            print gene_id, b[19], b[18], b[17], b[16], b[14], b[13], b[12], b[11], b[9], b[8], b[7], b[6], b[4], b[3], b[2], b[1], "F" > OUTDIR_ARG "/" BAM_NAME "_slam_counts.txt"
+                                        }
+                                    }else{
+                                        print gene_id, b[19], b[18], b[17], b[16], b[14], b[13], b[12], b[11], b[9], b[8], b[7], b[6], b[4], b[3], b[2], b[1] > OUTDIR_ARG "/" BAM_NAME "_slam_counts.txt"
+                                    }
+                                }else{
+                                    print "Error: Cannot determine strandedness. Script terminated." > "/dev/stderr"
+                                    print $0 > "/dev/stderr"
+                                    exit 1 # remove later, this likely only problematic is slamdunk mode, affects only reads which were paired, but did not have a mate (pair orientation is used to determine strandedness).
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 END{
+    finish_time = systime()
+    print "Reads with matches or mismatches:", stats["reads_with_M_in_cig"] >> OUTDIR_ARG "/" BAM_NAME "_rebound_stats.log"
+    print "Reads with mismatches:", stats["reads_with_mismatches"] >> OUTDIR_ARG "/" BAM_NAME "_rebound_stats.log"
+    print "Reads with mismatches passing filters:", stats["reads_with_mismatches_filtered"] >> OUTDIR_ARG "/" BAM_NAME "_rebound_stats.log"
+    if (MODE_ARG == "normal"){
+        print "Reads with mismatches passing filters (unique assignment):", stats["reads_with_mismatches_filtered_final"] >> OUTDIR_ARG "/" BAM_NAME "_rebound_stats.log"
+    }
+    print "Reads without mismatches:", stats["reads_without_mismatches"] >> OUTDIR_ARG "/" BAM_NAME "_rebound_stats.log"
+    print "Reads without mismatches passing filters:", stats["reads_without_mismatches_filtered"] >> OUTDIR_ARG "/" BAM_NAME "_rebound_stats.log"
+    if (MODE_ARG == "normal"){
+        print "Reads without mismatches passing filters (unique assignment):", stats["reads_without_mismatches_filtered_final"] >> OUTDIR_ARG "/" BAM_NAME "_rebound_stats.log"
+    }
     print "S(L)AM converter ended @ " strftime() > "/dev/stderr"
+    print (finish_time - start_time)/3600 , "Execution time in hours" > "/dev/stderr"
+    print (finish_time - start_time)/60 , "Execution time in minutes" > "/dev/stderr"
 }
