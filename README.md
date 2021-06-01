@@ -63,7 +63,7 @@ Running rebound on a STAR-aligned BAM file, reverse strandedness, keep unique re
 `rebound.sh -r genome.fa -o output/dir -l star -g annotations.gtf -s reverse -u -f -i 30 my.bam`
 
 **Output description**  
-![Summary table](/img/read_stats.png)
+![Summary table](/img/read_stats.jpg)
 Counts of reads passing filters and a summary of filter settings.
 * *Total reads*: all reads initially considered.
 * *Reads passing indel filter*: reads passing indel filter.
