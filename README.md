@@ -95,7 +95,7 @@ Same as the previous plot, but including coverage bins.
 Same data as the previous plot, but shown as histograms.
 
 ![Overrepresentation plot with coverage](/img/rates_spike_plot.png)
-Mismatch rates for the optional in-vitro transcribed control transcript (slam). This transcript serves as internal control of alkylation efficacy and can be used to normalize for potential variation between samples. <br>. "Slam" is an optional in-vitro transcribed mRNA containing synthetic 4-thiouridines only (no "normal" uridines). It serves as a control for alkylation efficacy and may be used to normalize for variation between samples. "Slam" spike-in control is typically added to RNA after initial purification and prior to alkylation.
+Mismatch rates for the optional in-vitro transcribed control transcript (slam). This transcript serves as internal control of alkylation efficacy and can be used to normalize for potential variation between samples. <br> "Slam" is an optional in-vitro transcribed mRNA containing synthetic 4-thiouridines only (no "normal" uridines). It serves as a control for alkylation efficacy and may be used to normalize for variation between samples. "Slam" spike-in control is typically added to RNA after initial purification and prior to alkylation.
 
 **References**<br>
 Herzog, V., Reichholf, B., Neumann, T. et al. Thiol-linked alkylation of RNA to assess expression dynamics. *Nat Methods* 14, 1198–1204 (2017). https://doi.org/10.1038/nmeth.4435
